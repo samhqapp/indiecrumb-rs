@@ -1,4 +1,4 @@
-//! Crash reports (feature `crash`). A panic hook writes one JSON file to `<dir>/crashes/`; nothing is
+//! Crash reports (feature `crash`). A panic hook and a fatal-signal handler write one JSON file to `<dir>/crashes/`; nothing is
 //! sent from the crashing process. On the next launch the app either asks the user (`pending_crashes`,
 //! `send_crash`, `discard_crash`; no install id is sent) or sends them all (`send_all_crashes`).
 //! With the `gpui` and `feedback` features, `ui::ask_crash` is the ready ask window.
@@ -61,9 +61,11 @@ impl Client {
                 let (file, line) = info.location().map(|l| (l.file().to_string(), l.line())).unwrap_or_default();
                 let r = report(&message, &file, line, &version, &build, frames());
                 write_spool(&dir, &r);
+                PANIC_SAVED.store(true, Ordering::SeqCst);
             }
             prev(info);
         }));
+        fatal::install(self.dir.join("crashes"), self.enabled.clone(), self.version.clone(), self.build.clone());
     }
 
     /// Reports waiting on disk, oldest first. Files older than 7 days are deleted.
@@ -119,6 +121,104 @@ impl Client {
         let ok = !id.is_empty() && !id.starts_with('.') && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.');
         ok.then(|| self.dir.join("crashes").join(id))
     }
+}
+
+/// Set once the panic hook saved a file, so the abort that may follow does not save a second one.
+static PANIC_SAVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Fatal signals: save the crash file, then `_exit`, so the process never dies from the signal and
+/// the OS crash dialog never shows (our prompt on the next launch replaces it). An unwinding panic
+/// still ends the way it always did; a panic that aborts arrives here as SIGABRT.
+// shortcut: a crash the handler never sees still goes to the OS crash reporter (a stack overflow on a
+// thread C or Objective-C code made, with no alternate signal stack; a kill by the OS); add a Mach
+// exception port if those show up.
+#[cfg(unix)]
+mod fatal {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, OnceLock};
+
+    const SIGNALS: [(i32, &str); 6] = [
+        (libc::SIGSEGV, "SIGSEGV"),
+        (libc::SIGBUS, "SIGBUS"),
+        (libc::SIGILL, "SIGILL"),
+        (libc::SIGFPE, "SIGFPE"),
+        (libc::SIGTRAP, "SIGTRAP"),
+        (libc::SIGABRT, "SIGABRT"),
+    ];
+
+    struct Ctx {
+        dir: PathBuf,
+        enabled: Arc<AtomicBool>,
+        version: String,
+        build: String,
+    }
+
+    static CTX: OnceLock<Ctx> = OnceLock::new();
+
+    pub(super) fn install(dir: PathBuf, enabled: Arc<AtomicBool>, version: String, build: String) {
+        if CTX.set(Ctx { dir, enabled, version, build }).is_err() {
+            return;
+        }
+        // SAFETY: plain libc calls with zeroed, fully set structs; the stack is leaked on purpose and
+        // lives as long as the process.
+        unsafe {
+            // std gives its own threads an alternate stack; give this thread one if it has none.
+            let mut old: libc::stack_t = std::mem::zeroed();
+            if libc::sigaltstack(std::ptr::null(), &mut old) == 0 && old.ss_flags & libc::SS_DISABLE != 0 {
+                let size = 256 * 1024;
+                let stack = Box::leak(vec![0u8; size].into_boxed_slice());
+                let mut new: libc::stack_t = std::mem::zeroed();
+                new.ss_sp = stack.as_mut_ptr().cast();
+                new.ss_size = size;
+                libc::sigaltstack(&new, std::ptr::null_mut());
+            }
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = handler as *const () as usize;
+            sa.sa_flags = libc::SA_SIGINFO | libc::SA_ONSTACK;
+            libc::sigemptyset(&mut sa.sa_mask);
+            for (sig, _) in SIGNALS {
+                libc::sigaction(sig, &sa, std::ptr::null_mut());
+            }
+        }
+    }
+
+    extern "C" fn handler(sig: i32, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
+        static ONCE: AtomicBool = AtomicBool::new(false);
+        // Only the first fault saves; a fault while saving, or on a second thread, just ends.
+        if !ONCE.swap(true, Ordering::SeqCst) && !(sig == libc::SIGABRT && PANIC_SAVED.load(Ordering::SeqCst)) {
+            if let Some(c) = CTX.get().filter(|c| c.enabled.load(Ordering::SeqCst)) {
+                let name = SIGNALS.iter().find(|(s, _)| *s == sig).map_or("signal", |(_, n)| n);
+                // shortcut: the report allocates, which is not async-signal-safe; a crash inside the
+                // allocator can lose the file (the process still ends without the OS dialog).
+                let mut r = report(name, "", 0, &c.version, &c.build, frames());
+                r.kind = "crash".into(); // the server's native-crash kind: no file or line, the signal name and frames
+                write_spool(&c.dir, &r);
+            }
+        }
+        // SAFETY: _exit is async-signal-safe and never returns.
+        unsafe { libc::_exit(128 + sig) }
+    }
+}
+
+/// Windows: no signal handlers; it only turns off Windows' own crash box (SEM_NOGPFAULTERRORBOX).
+#[cfg(windows)]
+mod fatal {
+    pub(super) fn install(_: std::path::PathBuf, _: std::sync::Arc<std::sync::atomic::AtomicBool>, _: String, _: String) {
+        extern "system" {
+            fn SetErrorMode(mode: u32) -> u32;
+        }
+        // SAFETY: sets a process flag, keeping the flags already set.
+        unsafe {
+            let old = SetErrorMode(0);
+            SetErrorMode(old | 0x0002);
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+mod fatal {
+    pub(super) fn install(_: std::path::PathBuf, _: std::sync::Arc<std::sync::atomic::AtomicBool>, _: String, _: String) {}
 }
 
 fn report(message: &str, file: &str, line: u32, version: &str, build: &str, frames: Vec<Frame>) -> CrashReport {
