@@ -19,7 +19,7 @@ in your binary. Check: `samples/feedback-only` links only `feedback`; its releas
 `/ic/v1/ping` or `/ic/v1/crash` string and no `usage` or `crash` symbol.
 
 ```toml
-indiecrumb = { git = "https://github.com/samhqapp/indiecrumb-rs", tag = "v0.2.1", features = ["feedback", "ureq"] }
+indiecrumb = { git = "https://github.com/samhqapp/indiecrumb-rs", tag = "v0.3.0", features = ["feedback", "ureq"] }
 ```
 
 Leave `ureq` off to pass your own HTTP client: implement `Transport::post` (one blocking POST).
@@ -36,7 +36,8 @@ let ic = indiecrumb::Client::new(indiecrumb::Config {
     enabled: settings.share_reports,    // the Settings switch
     transport: Box::new(indiecrumb::Ureq::default()),
 })?;
-ic.install_panic_hook();                // feature crash, early in main
+ic.install_panic_hook();                // feature crash, early in main; also catches fatal signals and
+                                        // ends with _exit, so the OS crash dialog never shows
 // later, off the UI thread:
 ic.ping_if_due(false);                  // feature usage: at launch and every hour
 ic.send_feedback(Feedback { kind: Kind::Bug, text, email: None, screenshot: Some(png), pro: false })?;
@@ -58,8 +59,9 @@ let form = cx.new(|cx| ReportProblem::new(settings.share_reports, window, cx)
 // In Settings: "Share anonymous usage", with a "1" note whose tooltip lists what this build sends.
 // `focus`: kept by the app, `cx.focus_handle().tab_stop(true)`. Tab reaches the row, Space flips it.
 sharing_row(Theme::of(window), &focus, settings.share_reports, |on, _, _| ic.set_enabled(on))
-// Ask mode, once at launch: after a crash, "<App> Quit Unexpectedly" with the crash included and an
-// optional message. Send sends it; closing the window deletes it. The window never activates the app.
+// Ask mode, once at launch, like macOS: the platform alert "<App> quit unexpectedly." (Report…, Ignore),
+// then the Problem Report window: a comment, the exact text that is sent, Don't Send and Send to
+// Developer. Ignore or closing deletes the crash. The window never activates the app.
 indiecrumb::ui::ask_crash(ic.clone(), "My App", cx);   // ic: Arc<Client>
 ```
 
@@ -71,7 +73,7 @@ indiecrumb::ui::ask_crash(ic.clone(), "My App", cx);   // ic: Arc<Client>
 |---|---|
 | Usage ping | at most once per UTC day, when the app calls `ping_if_due` (at launch, or on its own timer). A failed ping keeps its counts for the next try and is never queued. |
 | Feedback | only when the user submits it. Offline, it waits in the queue and goes with the next `flush`. |
-| Crash report | never from the crashing process. The panic hook writes one file; on the next launch the app asks the user (`ui::ask_crash`, or `pending_crashes`, `send_crash`, `discard_crash`) or sends all (`send_all_crashes`). |
+| Crash report | never from the crashing process. The panic hook (or the handler for SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP and SIGABRT) writes one file; on the next launch the app asks the user (`ui::ask_crash`, or `pending_crashes`, `send_crash`, `discard_crash`) or sends all (`send_all_crashes`). |
 
 Queue: one file per request in `<dir>/queue/`, at most 10 files, 1 MB and 7 days (oldest goes first).
 Crash files: `<dir>/crashes/`, at most 10, deleted after 7 days.

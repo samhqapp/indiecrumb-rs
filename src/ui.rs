@@ -546,31 +546,232 @@ impl Render for ReportProblem {
     }
 }
 
-/// Ask mode (features `crash` and `feedback`): when a crash waits on disk, opens [`ReportProblem::ask`]
-/// in its own window, without activating the app. Send sends the newest crash (no install id), and the
-/// message as feedback when the user typed one. Closing the window in any way deletes every waiting
-/// crash, so it asks once. Call it once at launch, after `gpui_kit::init`.
+/// Apple's caution sign: a yellow rounded triangle with a white rim and a black "!".
+const CAUTION_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFE14D"/><stop offset="1" stop-color="#F5B800"/></linearGradient></defs><path d="M27.6 7.6a5 5 0 0 1 8.8 0l24 43.4A5 5 0 0 1 56 58.5H8a5 5 0 0 1-4.4-7.5z" fill="#fff" stroke="#00000026" stroke-width="1"/><path d="M28.9 10.6a3.5 3.5 0 0 1 6.2 0l22.6 40.9a3.5 3.5 0 0 1-3.1 5.2H9.4a3.5 3.5 0 0 1-3.1-5.2z" fill="url(#g)"/><rect x="29.2" y="22" width="5.6" height="20" rx="2.8" fill="#1a1a1a"/><circle cx="32" cy="48.5" r="3.2" fill="#1a1a1a"/></svg>"##;
+
+/// The crash's "Problem Report" window, a copy of the macOS one: a comment field, the exact text that
+/// is sent, and "Don't Send" and "Send to Developer". [`ask_crash`] opens it after "Report…".
+pub struct ProblemReport {
+    app: SharedString,
+    details: SharedString,
+    comment: Entity<TextareaState>,
+    theme: Option<Theme>,
+    on_send: Option<Rc<dyn Fn(String, &mut Window, &mut App)>>,
+    on_close: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+}
+
+impl ProblemReport {
+    /// `details` is the read-only text that is sent, such as the crash JSON.
+    pub fn new(app: impl Into<SharedString>, details: impl Into<SharedString>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let comment = cx.new(|cx| TextareaState::new(window, cx).placeholder("Provide any steps necessary to reproduce the problem."));
+        ProblemReport { app: app.into(), details: details.into(), comment, theme: None, on_send: None, on_close: None }
+    }
+
+    /// Called with the comment (maybe empty) on "Send to Developer".
+    pub fn on_send(mut self, f: impl Fn(String, &mut Window, &mut App) + 'static) -> Self {
+        self.on_send = Some(Rc::new(f));
+        self
+    }
+
+    /// Called on "Don't Send" and after Send: close the window here.
+    pub fn on_close(mut self, f: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_close = Some(Rc::new(f));
+        self
+    }
+
+    /// Draws this theme instead of the window's own.
+    pub fn theme(mut self, theme: Theme) -> Self {
+        self.theme = Some(theme);
+        self
+    }
+}
+
+impl Render for ProblemReport {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::component::scroll::ScrollableElement as _;
+        use gpui_kit::component::{Icon, IconName};
+        let t = self.theme.unwrap_or_else(|| Theme::of(window));
+        let p = t.palette();
+        let mac = t.look == Look::Mac;
+        let mono = match t.look {
+            Look::Mac => "Menlo",
+            Look::Windows => "Consolas",
+            Look::Gnome => "Monospace",
+        };
+        let me = cx.entity();
+        let (close, close2, send_cb) = (self.on_close.clone(), self.on_close.clone(), self.on_send.clone());
+        let dont = button(&t, "ic-crash-dont-send", "Don\u{2019}t Send", Kind::Plain, true, move |window, cx| {
+            if let Some(f) = &close {
+                f(window, cx);
+            }
+        });
+        let send = button(&t, "ic-crash-send", "Send to Developer", Kind::Primary, true, move |window, cx| {
+            let text = me.read(cx).comment.read(cx).value().trim().to_string();
+            if let Some(f) = &send_cb {
+                f(text, window, cx);
+            }
+            if let Some(f) = &close2 {
+                f(window, cx);
+            }
+        });
+        let boxed = |d: Div| d.w_full().bg(p.field).border_1().border_color(p.border).rounded(px(if mac { 0.0 } else { p.control_radius }));
+        let icon = gpui_kit::img(std::sync::Arc::new(gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Svg, CAUTION_SVG.as_bytes().to_vec()))).size(px(64.0)).flex_none();
+        let header = div()
+            .flex()
+            .gap(px(15.0))
+            .child(icon)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .pt(px(4.0))
+                    .gap(px(13.0))
+                    .child(div().font_weight(FontWeight::BOLD).text_size(px(p.title.max(p.text))).child(SharedString::from(format!("{} quit unexpectedly.", self.app))))
+                    .child(
+                        div()
+                            .text_size(px(p.text - 2.0))
+                            .text_color(p.label)
+                            .child("Click \u{201C}Send to Developer\u{201D} to submit the report to the developer. This information is collected anonymously."),
+                    ),
+            );
+        let lines = self.details.lines().map(|l| div().whitespace_nowrap().child(SharedString::from(l.to_string())));
+        let body = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .pl(px(79.0))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .mt(px(12.0))
+                    .child(Icon::new(IconName::ChevronDown).size(px(11.0)).text_color(p.secondary))
+                    .child("Comments"),
+            )
+            .child(
+                boxed(div()).mt(px(5.0)).h(px(73.0)).px(px(4.0)).py(px(2.0)).child(
+                    Textarea::new(&self.comment).aria_label("Comments").appearance(false).with_size(Size::Small).h(px(67.0)),
+                ),
+            )
+            .child(div().mt(px(9.0)).pl(px(2.0)).child("Problem Details and System Configuration"))
+            .child(
+                boxed(div()).mt(px(3.0)).flex_1().min_h_0().child(
+                    div()
+                        .id("ic-crash-details")
+                        .size_full()
+                        .px(px(6.0))
+                        .py(px(5.0))
+                        .font_family(mono)
+                        .text_size(px(11.0))
+                        .line_height(px(13.0))
+                        .children(lines)
+                        .overflow_y_scrollbar(),
+                ),
+            )
+            .child(div().flex().justify_end().gap(px(if mac { 12.0 } else { 8.0 })).mt(px(14.0)).child(dont.min_w(px(109.0))).child(send.min_w(px(109.0))));
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .pt(px(20.0))
+            .pl(px(20.0))
+            .pr(px(21.0))
+            .pb(px(20.0))
+            .bg(p.window)
+            .font_family(p.font)
+            .text_size(px(p.text))
+            .text_color(p.label)
+            .child(header)
+            .child(body)
+    }
+}
+
+/// The JSON that is sent, keys sorted, one frame per line.
+#[cfg(feature = "crash")]
+fn crash_text(crash: &crate::crash::CrashReport) -> String {
+    let mut v = serde_json::to_value(crash).unwrap_or_default();
+    let frames = v.as_object_mut().and_then(|o| o.remove("frames"));
+    let mut s = serde_json::to_string_pretty(&v).unwrap_or_default();
+    if let (Some(serde_json::Value::Array(frames)), Some(end)) = (frames, s.rfind("\n}")) {
+        let list: Vec<String> = frames.iter().map(|f| format!("    {f}")).collect();
+        s.replace_range(end.., &format!(",\n  \"frames\": [\n{}\n  ]\n}}", list.join(",\n")));
+    }
+    s
+}
+
+/// Ask mode (features `crash` and `feedback`), like macOS: when a crash waits on disk, shows the
+/// platform alert "<App> quit unexpectedly." with "Report…" and "Ignore", without activating the app.
+/// Ignore deletes the crash; "Report…" opens the [`ProblemReport`] window, whose "Send to Developer"
+/// sends the newest crash (no install id) and the comment as feedback. Closing the window in any way
+/// deletes every waiting crash, so it asks once. Call it once at launch, after `gpui_kit::init`.
 #[cfg(all(feature = "crash", feature = "feedback"))]
 pub fn ask_crash(client: std::sync::Arc<crate::Client>, app_name: &str, cx: &mut App) {
-    use gpui_kit::{size, TitlebarOptions, WindowBounds, WindowOptions};
+    use gpui_kit::{size, EmptyView, WindowBackgroundAppearance, WindowBounds, WindowOptions};
     let Some(crash) = client.pending_crashes().pop() else { return };
-    // shortcut: fixed content heights per look (GPUI cannot size a window to its content); change with the form's layout.
-    let height = match Look::native() {
-        Look::Mac => 340.0,
-        Look::Windows => 440.0,
-        Look::Gnome => 370.0,
-    };
+    let name = app_name.to_string();
+    if !cfg!(target_os = "macos") {
+        return open_report(client, name, crash, true, cx);
+    }
+    // NSAlert is always a sheet, so on macOS it gets a clear window of its own size, and the report
+    // window opens only after "Report…".
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(480.0), px(height)), cx)),
-        titlebar: Some(TitlebarOptions { title: Some(app_name.to_string().into()), ..Default::default() }),
+        window_bounds: Some(WindowBounds::centered(size(px(260.0), px(234.0)), cx)),
+        titlebar: None,
+        window_background: WindowBackgroundAppearance::Transparent,
+        focus: false,
+        is_resizable: false,
+        is_minimizable: false,
+        ..Default::default()
+    };
+    let _ = cx.open_window(options, move |window, cx| {
+        let answer = crash_prompt(&name, window, cx);
+        window
+            .spawn(cx, async move |cx| {
+                let report = answer.await;
+                let _ = cx.update(|window, cx| {
+                    window.remove_window();
+                    if report {
+                        open_report(client, name, crash, false, cx);
+                    } else {
+                        client.pending_crashes().iter().for_each(|r| client.discard_crash(&r.id));
+                    }
+                });
+            })
+            .detach();
+        cx.new(|_| EmptyView)
+    });
+}
+
+#[cfg(all(feature = "crash", feature = "feedback"))]
+fn crash_prompt(name: &str, window: &mut Window, cx: &mut App) -> impl std::future::Future<Output = bool> + use<> {
+    use gpui_kit::{PromptButton, PromptLevel};
+    let rx = window.prompt(
+        PromptLevel::Critical,
+        &format!("{name} quit unexpectedly."),
+        Some("Click Report to see what would be sent. Nothing is sent unless you press Send."),
+        &[PromptButton::ok("Report\u{2026}"), PromptButton::cancel("Ignore")],
+        cx,
+    );
+    async move { rx.await == Ok(0) }
+}
+
+/// The Problem Report window; with `ask`, the platform alert shows on it first (Windows, Linux).
+#[cfg(all(feature = "crash", feature = "feedback"))]
+fn open_report(client: std::sync::Arc<crate::Client>, name: String, crash: crate::crash::CrashReport, ask: bool, cx: &mut App) {
+    use gpui_kit::{size, TitlebarOptions, WindowBounds, WindowOptions};
+    let details = crash_text(&crash);
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::centered(size(px(1000.0), px(740.0)), cx)),
+        titlebar: Some(TitlebarOptions { title: Some(format!("Problem Report for {name}").into()), ..Default::default() }),
         focus: false, // never activates the app
         is_resizable: false,
         is_minimizable: false,
         ..Default::default()
     };
-    let name = SharedString::from(app_name.to_string());
     let _ = gpui_kit::open_window(options, cx, move |window, cx| {
-        cx.new(|cx| {
+        let view = cx.new(|cx| {
             let sent = Rc::new(std::cell::Cell::new(false));
             let (c, s) = (client.clone(), sent.clone());
             cx.on_release(move |_, _| {
@@ -579,23 +780,32 @@ pub fn ask_crash(client: std::sync::Arc<crate::Client>, app_name: &str, cx: &mut
                 }
             })
             .detach();
-            ReportProblem::ask(name, window, cx)
-                .on_send(move |report, _, _| {
+            ProblemReport::new(name.clone(), details, window, cx)
+                .on_send(move |text, _, _| {
                     sent.set(true);
                     let (c, id) = (client.clone(), crash.id.clone());
                     std::thread::spawn(move || {
-                        if report.include_crash {
-                            c.send_crash(&id);
-                        }
-                        if !report.text.is_empty() {
-                            let f = crate::feedback::Feedback { kind: crate::feedback::Kind::Bug, text: report.text, email: report.email, screenshot: None, pro: false };
+                        c.send_crash(&id);
+                        if !text.is_empty() {
+                            let f = crate::feedback::Feedback { kind: crate::feedback::Kind::Bug, text, email: None, screenshot: None, pro: false };
                             let _ = c.send_feedback(f);
                         }
                         c.pending_crashes().iter().for_each(|r| c.discard_crash(&r.id));
                     });
                 })
                 .on_close(|window, _| window.remove_window())
-        })
+        });
+        if ask {
+            let answer = crash_prompt(&name, window, cx);
+            window
+                .spawn(cx, async move |cx| {
+                    if !answer.await {
+                        let _ = cx.update(|window, _| window.remove_window()); // Ignore: the release hook deletes the crash
+                    }
+                })
+                .detach();
+        }
+        view
     });
 }
 

@@ -2,7 +2,7 @@
 
 use gpui_kit::component::theme::{Theme as KitTheme, ThemeMode};
 use gpui_kit::{div, px, size, AppContext as _, HeadlessAppContext, IntoElement, ParentElement, Render, Styled};
-use indiecrumb::ui::{sharing_group, Look, ReportProblem, Theme, Tip};
+use indiecrumb::ui::{sharing_group, Look, ProblemReport, ReportProblem, Theme, Tip};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -35,7 +35,7 @@ impl Render for Settings {
 
 fn headless(dark: bool) -> HeadlessAppContext {
     let text = gpui_kit::platform::current_platform(true).text_system();
-    let mut cx = HeadlessAppContext::with_platform(text, Arc::new(()), gpui_kit::platform::current_headless_renderer);
+    let mut cx = HeadlessAppContext::with_platform(text, Arc::new(gpui_kit::assets::Assets), gpui_kit::platform::current_headless_renderer);
     cx.update(|cx| {
         gpui_kit::init(cx);
         KitTheme::change(if dark { ThemeMode::Dark } else { ThemeMode::Light }, None, cx);
@@ -50,6 +50,18 @@ fn main() {
         for dark in [false, true] {
             let theme = Theme::new(look, dark);
             let mode = if dark { "dark" } else { "light" };
+            {
+                let mut cx = headless(dark);
+                let w = cx
+                    .open_window(size(px(1000.0), px(740.0)), move |window, cx| {
+                        let details = std::fs::read_to_string(env!("CARGO_MANIFEST_DIR").to_string() + "/../crash.json").unwrap_or_default();
+                        let r = cx.new(|cx| ProblemReport::new("Hushpen", details, window, cx).theme(theme));
+                        cx.new(|cx| gpui_kit::base::Root::new(r, window, cx))
+                    })
+                    .unwrap();
+                cx.run_until_parked();
+                cx.capture_screenshot(w.into()).unwrap().save(out.join(format!("gpui-{name}-problem-{mode}.png"))).unwrap();
+            }
             for sent in [false, true] {
                 let mut cx = headless(dark);
                 let h = match look {

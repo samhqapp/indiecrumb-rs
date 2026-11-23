@@ -1,6 +1,6 @@
 [package]
 name = "indiecrumb"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
@@ -12,7 +12,7 @@ exclude = ["samples/"]
 default = []
 feedback = []
 usage = []
-crash = ["dep:backtrace"]
+crash = ["dep:backtrace", "dep:libc"]
 # The built-in HTTP client. Leave it off to pass your own `Transport`.
 ureq = ["dep:ureq"]
 # The "Report a problem" form and the sharing switch row, drawn with GPUI.
@@ -23,6 +23,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 getrandom = "0.3"
 backtrace = { version = "0.3", optional = true }
+libc = { version = "0.2", optional = true }
 ureq = { version = "3", optional = true, default-features = false, features = ["rustls"] }
 gpui-kit = { version = "0.7", optional = true }
 
