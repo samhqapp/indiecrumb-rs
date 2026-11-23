@@ -18,7 +18,30 @@ pub(crate) struct Counts {
     counters: BTreeMap<String, u64>,
 }
 
+/// The release channel the ping reports. The server keeps each channel's totals apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Channel {
+    Production,
+    Beta,
+    Internal,
+}
+
+impl Channel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Channel::Production => "production",
+            Channel::Beta => "beta",
+            Channel::Internal => "internal",
+        }
+    }
+}
+
 impl Client {
+    /// Sets the channel later pings report. Default `Production`.
+    pub fn set_channel(&self, c: Channel) {
+        *self.channel.lock().unwrap() = c;
+    }
+
     /// Counts one use of the app's main action (one dictation, one cleanup).
     pub fn record_use(&self) {
         self.change_counts(|c| c.uses = c.uses.saturating_add(1));
@@ -62,6 +85,7 @@ impl Client {
                 "uses": c.uses.min(USES_MAX),
                 "pro": pro,
                 "counters": c.counters,
+                "channel": self.channel.lock().unwrap().as_str(),
             });
             (serde_json::to_vec(&body).unwrap(), c.counters.clone())
         };
@@ -138,7 +162,8 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&sent[0].2).unwrap();
         let mut keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
         keys.sort();
-        assert_eq!(keys, ["arch", "build", "counters", "d", "m", "os", "os_major", "pro", "uses", "version"]);
+        assert_eq!(keys, ["arch", "build", "channel", "counters", "d", "m", "os", "os_major", "pro", "uses", "version"]);
+        assert_eq!(v["channel"], "production");
         assert_eq!((v["d"].as_u64(), v["m"].as_u64(), v["uses"].as_u64()), (Some(1), Some(1), Some(3)));
         assert_eq!(v["counters"]["cleanups"], 2);
         drop(sent);
@@ -146,6 +171,10 @@ mod tests {
         assert_eq!(c.ping_at(day + 86400, false), Some(Delivery::Sent));
         let v: serde_json::Value = serde_json::from_slice(&m.sent.lock().unwrap()[1].2).unwrap();
         assert_eq!((v["m"].as_u64(), v["uses"].as_u64()), (Some(0), Some(0)));
+        c.set_channel(Channel::Beta);
+        assert_eq!(c.ping_at(day + 2 * 86400, false), Some(Delivery::Sent));
+        let v: serde_json::Value = serde_json::from_slice(&m.sent.lock().unwrap()[2].2).unwrap();
+        assert_eq!(v["channel"], "beta");
     }
 
     #[test]

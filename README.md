@@ -85,8 +85,9 @@ memory only), a hostname, a user name, or a file path. Crash text has the home f
 | `uses` | uses counted with `record_use` since the last ping, capped at 1023 |
 | `pro` | the paid tier, `true` or `false` |
 | `counters` | `{name: n}` from `add_counter` since the last ping, at most 16 names; the server drops names the project did not define |
+| `channel` | `production` (default), `beta` or `internal`, set with `Client::set_channel(usage::Channel::Beta)`. The server stores anything else as `production`. |
 
-The server stores only daily totals per app, version, OS and arch.
+The server stores only daily totals per app, version, OS, arch and channel.
 
 ### `POST /ic/v1/feedback` (feature `feedback`)
 

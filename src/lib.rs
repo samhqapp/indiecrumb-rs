@@ -117,6 +117,8 @@ pub struct Client {
     send_lock: Mutex<()>,
     #[cfg(feature = "usage")]
     usage: Mutex<usage::Counts>,
+    #[cfg(feature = "usage")]
+    channel: Mutex<usage::Channel>,
 }
 
 enum Outcome {
@@ -132,6 +134,8 @@ impl Client {
         let c = Client {
             #[cfg(feature = "usage")]
             usage: Mutex::new(read_json(&cfg.dir.join("usage.json")).unwrap_or_default()),
+            #[cfg(feature = "usage")]
+            channel: Mutex::new(usage::Channel::Production),
             endpoint: cfg.endpoint.trim_end_matches('/').to_string(),
             key: cfg.key,
             version: cfg.version,
