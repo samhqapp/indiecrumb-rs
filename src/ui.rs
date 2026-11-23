@@ -554,8 +554,14 @@ impl Render for ReportProblem {
 pub fn ask_crash(client: std::sync::Arc<crate::Client>, app_name: &str, cx: &mut App) {
     use gpui_kit::{size, TitlebarOptions, WindowBounds, WindowOptions};
     let Some(crash) = client.pending_crashes().pop() else { return };
+    // shortcut: fixed content heights per look (GPUI cannot size a window to its content); change with the form's layout.
+    let height = match Look::native() {
+        Look::Mac => 340.0,
+        Look::Windows => 440.0,
+        Look::Gnome => 370.0,
+    };
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(480.0), px(400.0)), cx)),
+        window_bounds: Some(WindowBounds::centered(size(px(480.0), px(height)), cx)),
         titlebar: Some(TitlebarOptions { title: Some(app_name.to_string().into()), ..Default::default() }),
         focus: false, // never activates the app
         is_resizable: false,
