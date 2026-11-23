@@ -1,6 +1,6 @@
 [package]
 name = "indiecrumb"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
@@ -16,7 +16,7 @@ crash = ["dep:backtrace", "dep:libc"]
 # The built-in HTTP client. Leave it off to pass your own `Transport`.
 ureq = ["dep:ureq"]
 # The "Report a problem" form and the sharing switch row, drawn with GPUI.
-gpui = ["dep:gpui-kit"]
+gpui = ["dep:gpui-kit", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -26,6 +26,12 @@ backtrace = { version = "0.3", optional = true }
 libc = { version = "0.2", optional = true }
 ureq = { version = "3", optional = true, default-features = false, features = ["rustls"] }
 gpui-kit = { version = "0.7", optional = true }
+
+# The crash alert on macOS is a real app-modal NSAlert. Same crates GPUI uses on macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3.2", optional = true, default-features = false, features = ["std", "NSAlert", "NSButton", "NSControl", "NSImage", "NSResponder", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3.2", optional = true, default-features = false, features = ["std", "NSString"] }
 
 [[test]]
 name = "e2e"

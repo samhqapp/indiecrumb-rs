@@ -708,41 +708,45 @@ fn crash_text(crash: &crate::crash::CrashReport) -> String {
 /// deletes every waiting crash, so it asks once. Call it once at launch, after `gpui_kit::init`.
 #[cfg(all(feature = "crash", feature = "feedback"))]
 pub fn ask_crash(client: std::sync::Arc<crate::Client>, app_name: &str, cx: &mut App) {
-    use gpui_kit::{size, EmptyView, WindowBackgroundAppearance, WindowBounds, WindowOptions};
     let Some(crash) = client.pending_crashes().pop() else { return };
     let name = app_name.to_string();
-    if !cfg!(target_os = "macos") {
-        return open_report(client, name, crash, true, cx);
-    }
-    // NSAlert is always a sheet, so on macOS it gets a clear window of its own size, and the report
-    // window opens only after "Report…".
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(260.0), px(234.0)), cx)),
-        titlebar: None,
-        window_background: WindowBackgroundAppearance::Transparent,
-        focus: false,
-        is_resizable: false,
-        is_minimizable: false,
-        ..Default::default()
-    };
-    let _ = cx.open_window(options, move |window, cx| {
-        let answer = crash_prompt(&name, window, cx);
-        window
-            .spawn(cx, async move |cx| {
-                let report = answer.await;
-                let _ = cx.update(|window, cx| {
-                    window.remove_window();
-                    if report {
-                        open_report(client, name, crash, false, cx);
-                    } else {
-                        client.pending_crashes().iter().for_each(|r| client.discard_crash(&r.id));
-                    }
-                });
-            })
-            .detach();
-        cx.new(|_| EmptyView)
-    });
+    #[cfg(not(target_os = "macos"))]
+    open_report(client, name, crash, true, cx);
+    // GPUI's prompt is a sheet on a window, so macOS gets a real app-modal alert with no window
+    // around it, and the report window opens only after "Report…". It runs in a task, outside any
+    // App borrow, so GPUI work in the modal loop does not clash with it.
+    #[cfg(target_os = "macos")]
+    cx.spawn(async move |cx| {
+        let report = mac_alert(&name);
+        let _ = cx.update(|cx| {
+            if report {
+                open_report(client, name, crash, false, cx);
+            } else {
+                client.pending_crashes().iter().for_each(|r| client.discard_crash(&r.id));
+            }
+        });
+    })
+    .detach();
 }
+
+/// The macOS crash alert, app-modal: true for "Report…", false for "Ignore" or Escape.
+#[cfg(all(feature = "crash", feature = "feedback", target_os = "macos"))]
+fn mac_alert(name: &str) -> bool {
+    use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSImage, NSImageNameCaution};
+    use objc2_foundation::NSString;
+    let Some(mtm) = objc2::MainThreadMarker::new() else { return false };
+    let alert = NSAlert::new(mtm);
+    // The plain caution sign, like the system alert; the Critical style would add an app-icon badge.
+    unsafe { alert.setIcon(NSImage::imageNamed(NSImageNameCaution).as_deref()) }; // main thread, a system image
+    alert.setMessageText(&NSString::from_str(&format!("{name} quit unexpectedly.")));
+    alert.setInformativeText(&NSString::from_str(PROMPT_DETAIL));
+    alert.addButtonWithTitle(&NSString::from_str("Report\u{2026}"));
+    alert.addButtonWithTitle(&NSString::from_str("Ignore")).setKeyEquivalent(&NSString::from_str("\u{1b}"));
+    alert.runModal() == NSAlertFirstButtonReturn
+}
+
+#[cfg(all(feature = "crash", feature = "feedback"))]
+const PROMPT_DETAIL: &str = "Click Report to see what would be sent. Nothing is sent unless you press Send.";
 
 #[cfg(all(feature = "crash", feature = "feedback"))]
 fn crash_prompt(name: &str, window: &mut Window, cx: &mut App) -> impl std::future::Future<Output = bool> + use<> {
@@ -750,7 +754,7 @@ fn crash_prompt(name: &str, window: &mut Window, cx: &mut App) -> impl std::futu
     let rx = window.prompt(
         PromptLevel::Critical,
         &format!("{name} quit unexpectedly."),
-        Some("Click Report to see what would be sent. Nothing is sent unless you press Send."),
+        Some(PROMPT_DETAIL),
         &[PromptButton::ok("Report\u{2026}"), PromptButton::cancel("Ignore")],
         cx,
     );
