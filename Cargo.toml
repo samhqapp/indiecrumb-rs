@@ -1,0 +1,27 @@
+[package]
+name = "indiecrumb"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+description = "IndieCrumb client: in-app feedback, a daily usage ping, and crash reports. Each part is a cargo feature."
+exclude = ["samples/"]
+
+[features]
+default = []
+feedback = []
+usage = []
+crash = ["dep:backtrace"]
+# The built-in HTTP client. Leave it off to pass your own `Transport`.
+ureq = ["dep:ureq"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+getrandom = "0.3"
+backtrace = { version = "0.3", optional = true }
+ureq = { version = "3", optional = true, default-features = false, features = ["rustls"] }
+
+[[test]]
+name = "e2e"
+required-features = ["feedback", "usage", "ureq"]

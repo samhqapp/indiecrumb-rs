@@ -1,0 +1,14 @@
+[package]
+name = "feedback-only"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Stand-alone: links the crate with only the `feedback` feature, to show the other modules are absent.
+[workspace]
+
+[dependencies]
+indiecrumb = { path = "../..", features = ["feedback", "ureq"] }
+
+[profile.release]
+strip = false
