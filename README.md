@@ -19,7 +19,7 @@ in your binary. Check: `samples/feedback-only` links only `feedback`; its releas
 `/ic/v1/ping` or `/ic/v1/crash` string and no `usage` or `crash` symbol.
 
 ```toml
-indiecrumb = { version = "0.1", features = ["feedback", "ureq"] }
+indiecrumb = { git = "https://github.com/samhqapp/indiecrumb-rs", tag = "v0.1.0", features = ["feedback", "ureq"] }
 ```
 
 Leave `ureq` off to pass your own HTTP client: implement `Transport::post` (one blocking POST).

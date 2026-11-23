@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
+repository = "https://github.com/samhqapp/indiecrumb-rs"
 description = "IndieCrumb client: in-app feedback, a daily usage ping, and crash reports. Each part is a cargo feature."
 exclude = ["samples/"]
 
