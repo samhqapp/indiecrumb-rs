@@ -281,6 +281,7 @@ fn button(
 /// What the user filled in. The app sends it, such as with `Client::send_feedback`.
 #[derive(Clone, Debug)]
 pub struct Report {
+    /// Empty only in ask mode, when the user typed nothing.
     pub text: String,
     /// Only when the user typed one.
     pub email: Option<String>,
@@ -294,6 +295,8 @@ pub struct ReportProblem {
     email: Entity<InputState>,
     crash_focus: FocusHandle,
     include_crash: bool,
+    /// Ask mode: the app name, after a crash.
+    asking: Option<SharedString>,
     sent: bool,
     theme: Option<Theme>,
     on_send: Option<Rc<dyn Fn(Report, &mut Window, &mut App)>>,
@@ -303,11 +306,26 @@ pub struct ReportProblem {
 impl ReportProblem {
     /// `sharing` is the Settings switch: when it is off, "Include last crash" starts off.
     pub fn new(sharing: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let message = cx.new(|cx| TextareaState::new(window, cx).placeholder("What happened, and what did you expect?"));
+        Self::build("What happened, and what did you expect?", sharing, None, window, cx)
+    }
+
+    /// Ask mode, after a crash: the heading is "<App> Quit Unexpectedly", the crash is included, and
+    /// the message is optional. [`ask_crash`] opens it in its own window.
+    pub fn ask(app_name: impl Into<SharedString>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::build("Optional: what were you doing when it quit?", true, Some(app_name.into()), window, cx)
+    }
+
+    fn build(prompt: &'static str, include_crash: bool, asking: Option<SharedString>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let message = cx.new(|cx| TextareaState::new(window, cx).placeholder(prompt));
         let email = cx.new(|cx| InputState::new(window, cx).placeholder("name@example.com"));
         cx.observe(&message, |_, _, cx| cx.notify()).detach();
         let crash_focus = cx.focus_handle().tab_stop(true);
-        ReportProblem { message, email, crash_focus, include_crash: sharing, sent: false, theme: None, on_send: None, on_close: None }
+        ReportProblem { message, email, crash_focus, include_crash, asking, sent: false, theme: None, on_send: None, on_close: None }
+    }
+
+    /// Send is ready with text, or in ask mode with the crash included.
+    fn ready(&self, cx: &App) -> bool {
+        !self.message.read(cx).value().trim().is_empty() || (self.asking.is_some() && self.include_crash)
     }
 
     /// Called with the report when the user presses Send. The form then shows "Report sent".
@@ -335,10 +353,10 @@ impl ReportProblem {
     }
 
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.message.read(cx).value().trim().to_string();
-        if text.is_empty() {
+        if !self.ready(cx) {
             return;
         }
+        let text = self.message.read(cx).value().trim().to_string();
         let email = self.email.read(cx).value().trim().to_string();
         let report = Report { text, email: (!email.is_empty()).then_some(email), include_crash: self.include_crash };
         if let Some(f) = self.on_send.clone() {
@@ -355,7 +373,7 @@ impl ReportProblem {
                 f(window, cx);
             }
         });
-        let ready = !self.message.read(cx).value().trim().is_empty();
+        let ready = self.ready(cx);
         let send = button(t, "ic-report-send", "Send", Kind::Primary, ready, {
             let me = me.clone();
             move |window, cx| me.update(cx, |me, cx| me.send(window, cx))
@@ -413,7 +431,11 @@ impl ReportProblem {
                     .child(email),
             );
         let heading = |d: Div| d.text_size(px(p.title)).font_weight(FontWeight::SEMIBOLD).text_color(p.label);
+        let title = |plain: &'static str| -> SharedString {
+            self.asking.as_ref().map_or(plain.into(), |app| format!("{app} Quit Unexpectedly").into())
+        };
         let lead = div().text_color(p.secondary).child("Tell us what went wrong. We read every report.");
+        let asking = self.asking.is_some();
         match t.look {
             // libadwaita: a header bar with Cancel left, the title centered, Send right.
             Look::Gnome => div()
@@ -427,7 +449,7 @@ impl ReportProblem {
                         .h(px(48.0))
                         .px(px(6.0))
                         .child(cancel)
-                        .child(heading(div()).font_weight(FontWeight::BOLD).child("Report a Problem"))
+                        .child(heading(div()).font_weight(FontWeight::BOLD).child(title("Report a Problem")))
                         .child(send),
                 )
                 .child(
@@ -436,7 +458,7 @@ impl ReportProblem {
                         .flex_col()
                         .gap(px(18.0))
                         .p(px(18.0))
-                        .child(lead)
+                        .when(!asking, |d| d.child(lead))
                         .child(message)
                         .child(options),
                 )
@@ -452,8 +474,8 @@ impl ReportProblem {
                         .gap(px(14.0))
                         .p(px(24.0))
                         .bg(p.group)
-                        .child(heading(div()).child("Report a problem"))
-                        .child(lead)
+                        .child(heading(div()).child(title("Report a problem")))
+                        .when(!asking, |d| d.child(lead))
                         .child(message)
                         .child(options.bg(p.window)),
                 )
@@ -466,7 +488,7 @@ impl ReportProblem {
                 .flex_col()
                 .gap(px(14.0))
                 .p(px(20.0))
-                .child(div().flex().flex_col().gap(px(4.0)).child(heading(div()).font_weight(FontWeight::BOLD).child("Report a Problem")).child(lead))
+                .child(div().flex().flex_col().gap(px(4.0)).child(heading(div()).font_weight(FontWeight::BOLD).child(title("Report a Problem"))).when(!asking, |d| d.child(lead)))
                 .child(message)
                 .child(options)
                 .child(div().flex().justify_end().gap(px(10.0)).pt(px(4.0)).child(cancel).child(send))
@@ -522,6 +544,53 @@ impl Render for ReportProblem {
             .text_color(p.label)
             .child(if self.sent { self.done(&t, &p) } else { self.form(&t, &p, cx) })
     }
+}
+
+/// Ask mode (features `crash` and `feedback`): when a crash waits on disk, opens [`ReportProblem::ask`]
+/// in its own window, without activating the app. Send sends the newest crash (no install id), and the
+/// message as feedback when the user typed one. Closing the window in any way deletes every waiting
+/// crash, so it asks once. Call it once at launch, after `gpui_kit::init`.
+#[cfg(all(feature = "crash", feature = "feedback"))]
+pub fn ask_crash(client: std::sync::Arc<crate::Client>, app_name: &str, cx: &mut App) {
+    use gpui_kit::{size, TitlebarOptions, WindowBounds, WindowOptions};
+    let Some(crash) = client.pending_crashes().pop() else { return };
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::centered(size(px(480.0), px(400.0)), cx)),
+        titlebar: Some(TitlebarOptions { title: Some(app_name.to_string().into()), ..Default::default() }),
+        focus: false, // never activates the app
+        is_resizable: false,
+        is_minimizable: false,
+        ..Default::default()
+    };
+    let name = SharedString::from(app_name.to_string());
+    let _ = gpui_kit::open_window(options, cx, move |window, cx| {
+        cx.new(|cx| {
+            let sent = Rc::new(std::cell::Cell::new(false));
+            let (c, s) = (client.clone(), sent.clone());
+            cx.on_release(move |_, _| {
+                if !s.get() {
+                    c.pending_crashes().iter().for_each(|r| c.discard_crash(&r.id));
+                }
+            })
+            .detach();
+            ReportProblem::ask(name, window, cx)
+                .on_send(move |report, _, _| {
+                    sent.set(true);
+                    let (c, id) = (client.clone(), crash.id.clone());
+                    std::thread::spawn(move || {
+                        if report.include_crash {
+                            c.send_crash(&id);
+                        }
+                        if !report.text.is_empty() {
+                            let f = crate::feedback::Feedback { kind: crate::feedback::Kind::Bug, text: report.text, email: report.email, screenshot: None, pro: false };
+                            let _ = c.send_feedback(f);
+                        }
+                        c.pending_crashes().iter().for_each(|r| c.discard_crash(&r.id));
+                    });
+                })
+                .on_close(|window, _| window.remove_window())
+        })
+    });
 }
 
 /// What the sharing switch sends, from the features this build has.

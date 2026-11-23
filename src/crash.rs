@@ -1,8 +1,7 @@
 //! Crash reports (feature `crash`). A panic hook writes one JSON file to `<dir>/crashes/`; nothing is
 //! sent from the crashing process. On the next launch the app either asks the user (`pending_crashes`,
 //! `send_crash`, `discard_crash`; no install id is sent) or sends them all (`send_all_crashes`).
-//!
-//! The server route `POST /ic/v1/crash` is not built yet; this body follows plan section 5 and 7.
+//! With the `gpui` and `feedback` features, `ui::ask_crash` is the ready ask window.
 
 use crate::{Client, Delivery};
 use serde::{Deserialize, Serialize};

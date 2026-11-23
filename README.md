@@ -12,14 +12,14 @@ MIT licensed. Small on purpose, so you can read all of it before you ship it.
 | `usage` | `Client::record_use`, `add_counter`, `ping_if_due` | none |
 | `crash` | `Client::install_panic_hook`, `pending_crashes`, `send_crash`, `discard_crash`, `send_all_crashes` | `backtrace` |
 | `ureq` | `Ureq`, a ready `Transport` (rustls) | `ureq` |
-| `gpui` | `ui::ReportProblem` (the "Report a problem" form) and `ui::sharing_row` (the Settings switch) | `gpui-kit` |
+| `gpui` | `ui::ReportProblem` (the "Report a problem" form), `ui::ask_crash` (with `crash` and `feedback`) and `ui::sharing_row` (the Settings switch) | `gpui-kit` |
 
 The default feature set is empty. Code of a feature you do not turn on is not compiled, so it is not
 in your binary. Check: `samples/feedback-only` links only `feedback`; its release binary has no
 `/ic/v1/ping` or `/ic/v1/crash` string and no `usage` or `crash` symbol.
 
 ```toml
-indiecrumb = { git = "https://github.com/samhqapp/indiecrumb-rs", tag = "v0.1.0", features = ["feedback", "ureq"] }
+indiecrumb = { git = "https://github.com/samhqapp/indiecrumb-rs", tag = "v0.2.0", features = ["feedback", "ureq"] }
 ```
 
 Leave `ureq` off to pass your own HTTP client: implement `Transport::post` (one blocking POST).
@@ -58,6 +58,9 @@ let form = cx.new(|cx| ReportProblem::new(settings.share_reports, window, cx)
 // In Settings: "Share anonymous usage", with a "1" note whose tooltip lists what this build sends.
 // `focus`: kept by the app, `cx.focus_handle().tab_stop(true)`. Tab reaches the row, Space flips it.
 sharing_row(Theme::of(window), &focus, settings.share_reports, |on, _, _| ic.set_enabled(on))
+// Ask mode, once at launch: after a crash, "<App> Quit Unexpectedly" with the crash included and an
+// optional message. Send sends it; closing the window deletes it. The window never activates the app.
+indiecrumb::ui::ask_crash(ic.clone(), "My App", cx);   // ic: Arc<Client>
 ```
 
 `samples/gpui-render` draws every look in Light and Dark to PNG files (macOS).
@@ -68,7 +71,7 @@ sharing_row(Theme::of(window), &focus, settings.share_reports, |on, _, _| ic.set
 |---|---|
 | Usage ping | at most once per UTC day, when the app calls `ping_if_due` (at launch, or on its own timer). A failed ping keeps its counts for the next try and is never queued. |
 | Feedback | only when the user submits it. Offline, it waits in the queue and goes with the next `flush`. |
-| Crash report | never from the crashing process. The panic hook writes one file; on the next launch the app asks the user (`pending_crashes`, `send_crash`, `discard_crash`) or sends all (`send_all_crashes`). |
+| Crash report | never from the crashing process. The panic hook writes one file; on the next launch the app asks the user (`ui::ask_crash`, or `pending_crashes`, `send_crash`, `discard_crash`) or sends all (`send_all_crashes`). |
 
 Queue: one file per request in `<dir>/queue/`, at most 10 files, 1 MB and 7 days (oldest goes first).
 Crash files: `<dir>/crashes/`, at most 10, deleted after 7 days.
@@ -125,8 +128,7 @@ The server stores only daily totals per app, version, OS, arch and channel.
 
 ### `POST /ic/v1/crash` (feature `crash`)
 
-The server route is not built yet; this is the planned shape (at most 64 KB, 200 frames, strings
-at most 256 characters).
+At most 64 KB, 200 frames, strings at most 256 characters. The server rejects unknown fields.
 
 | Field | Value |
 |---|---|
