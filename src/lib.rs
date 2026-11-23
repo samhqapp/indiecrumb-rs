@@ -79,7 +79,8 @@ pub struct Config {
     pub build: String,
     /// A folder the SDK owns, such as `<app data>/indiecrumb`.
     pub dir: PathBuf,
-    /// The app's Settings switch. Off: nothing is sent and every queued item is deleted.
+    /// The app's Settings switch. Off: nothing automatic is sent and every queued item is deleted.
+    /// What the user sends by hand (feedback, an approved crash report) still goes, without the install id.
     pub enabled: bool,
     pub transport: Box<dyn Transport>,
 }
@@ -158,9 +159,10 @@ impl Client {
 
     /// Wire this to the Settings switch. Off deletes the queue, crash files and usage counts at once.
     pub fn set_enabled(&self, on: bool) {
+        // Under the send lock, so a send that checked the switch finishes its write before this.
+        let _g = self.send_lock.lock().unwrap();
         self.enabled.store(on, Ordering::SeqCst);
         if !on {
-            let _g = self.send_lock.lock().unwrap();
             if let Ok(rd) = fs::read_dir(&self.dir) {
                 for e in rd.flatten() {
                     let p = e.path();
@@ -191,12 +193,13 @@ impl Client {
 
     /// Sends every queued item, oldest first, until one fails. Returns how many went.
     pub fn flush(&self) -> usize {
-        self.flush_inner().0
+        let _g = self.send_lock.lock().unwrap();
+        self.flush_locked().0
     }
 
-    /// Returns the sent count and the items the server refused for good.
-    fn flush_inner(&self) -> (usize, Vec<(PathBuf, u16)>) {
-        let _g = self.send_lock.lock().unwrap();
+    /// Caller holds `send_lock`. Returns the sent count and the items the server refused for good.
+    /// With the switch off, every item the user did not send is deleted unsent.
+    fn flush_locked(&self) -> (usize, Vec<(PathBuf, u16)>) {
         let mut sent = 0;
         let mut dropped = vec![];
         for (path, _) in self.queue_files() {
@@ -205,9 +208,14 @@ impl Client {
                 let _ = fs::remove_file(&path);
                 continue;
             };
+            // Header: "<route> <install 0|1> <user-sent 0|1>"
             let head = String::from_utf8_lossy(&raw[..nl]).to_string();
-            let (route, install) = head.split_once(' ').unwrap_or((&head, "0"));
-            match self.post(route, &raw[nl + 1..], install == "1") {
+            let head: Vec<&str> = head.split(' ').collect();
+            if !self.enabled() && head.get(2) != Some(&"1") {
+                let _ = fs::remove_file(&path);
+                continue;
+            }
+            match self.post(head[0], &raw[nl + 1..], head.get(1) == Some(&"1")) {
                 Outcome::Sent => {
                     let _ = fs::remove_file(&path);
                     sent += 1;
@@ -222,22 +230,27 @@ impl Client {
         (sent, dropped)
     }
 
-    /// Stores one request in the queue, then sends the queue.
+    /// Stores one request in the queue, then sends the queue. The switch check and the write share
+    /// `send_lock`, so turning the switch off cannot fall between them. `user_sent`: the user pressed
+    /// Send on it, so it goes even with the switch off, without the install id.
     #[allow(dead_code)]
-    pub(crate) fn enqueue_and_flush(&self, route: &str, body: &[u8], install: bool) -> Delivery {
-        if !self.enabled() {
+    pub(crate) fn enqueue_and_flush(&self, route: &str, body: &[u8], install: bool, user_sent: bool) -> Delivery {
+        let _g = self.send_lock.lock().unwrap();
+        let on = self.enabled();
+        if !on && !user_sent {
             return Delivery::Off;
         }
         let name = format!("{:010}-{}", now(), random_hex(4));
         let qdir = self.dir.join("queue");
         let file = qdir.join(&name);
-        let mut data = format!("{route} {}\n", install as u8).into_bytes();
+        // The install id is allowed only if sharing was on when queued; send time checks again.
+        let mut data = format!("{route} {} {}\n", (install && on) as u8, user_sent as u8).into_bytes();
         data.extend_from_slice(body);
         if data.len() as u64 > QUEUE_BYTES || make_private_dir(&qdir).is_err() || write_private(&file, &data).is_err() {
             return Delivery::Rejected(413);
         }
         self.prune_queue();
-        let (_, dropped) = self.flush_inner();
+        let (_, dropped) = self.flush_locked();
         if let Some((_, code)) = dropped.iter().find(|(p, _)| *p == file) {
             Delivery::Rejected(*code)
         } else if file.exists() {
@@ -250,10 +263,10 @@ impl Client {
     /// Sends one request now, without the queue (the usage ping: a stale ping must not count for a later day).
     #[allow(dead_code)]
     pub(crate) fn send_now(&self, route: &str, body: &[u8], install: bool) -> Delivery {
+        let _g = self.send_lock.lock().unwrap();
         if !self.enabled() {
             return Delivery::Off;
         }
-        let _g = self.send_lock.lock().unwrap();
         match self.post(route, body, install) {
             Outcome::Sent => Delivery::Sent,
             Outcome::Retry => Delivery::Queued,
@@ -265,10 +278,10 @@ impl Client {
     /// wait `Retry-After` or 1 minute doubling to 6 hours; any other status drops the item.
     fn post(&self, route: &str, body: &[u8], install: bool) -> Outcome {
         let now = now();
-        if !self.enabled() || self.state.lock().unwrap().retry_at > now {
+        if self.state.lock().unwrap().retry_at > now {
             return Outcome::Retry;
         }
-        let id = if install { Some(self.install_id()) } else { None };
+        let id = if install && self.enabled() { Some(self.install_id()) } else { None }; // checked at send time
         let mut headers = vec![("X-IC-Key", self.key.as_str())];
         if let Some(id) = &id {
             headers.push(("X-IC-Install", id.as_str()));
@@ -513,7 +526,7 @@ mod tests {
         let m = Mock::default();
         m.replies.lock().unwrap().push(Err("offline".into()));
         let c = client(&d, &m);
-        assert_eq!(c.enqueue_and_flush("/ic/v1/x", b"{}", false), Delivery::Queued);
+        assert_eq!(c.enqueue_and_flush("/ic/v1/x", b"{}", false, false), Delivery::Queued);
         assert_eq!(c.queue_files().len(), 1);
         // Backoff blocks an early retry.
         assert_eq!(c.flush(), 0);
@@ -533,11 +546,11 @@ mod tests {
         let c = client(&d, &m);
         c.state.lock().unwrap().retry_at = u64::MAX; // hold everything
         for _ in 0..15 {
-            c.enqueue_and_flush("/ic/v1/x", &[b'a'; 1000], false);
+            c.enqueue_and_flush("/ic/v1/x", &[b'a'; 1000], false, false);
         }
         assert_eq!(c.queue_files().len(), QUEUE_FILES);
         for _ in 0..4 {
-            c.enqueue_and_flush("/ic/v1/x", &vec![b'a'; 300 << 10], false);
+            c.enqueue_and_flush("/ic/v1/x", &vec![b'a'; 300 << 10], false, false);
         }
         assert!(c.queue_files().iter().map(|f| f.1).sum::<u64>() <= QUEUE_BYTES);
     }
@@ -560,12 +573,51 @@ mod tests {
         let m = Mock::default();
         m.replies.lock().unwrap().push(Err("offline".into()));
         let c = client(&d, &m);
-        c.enqueue_and_flush("/ic/v1/x", b"{}", false);
+        c.enqueue_and_flush("/ic/v1/x", b"{}", false, false);
         c.set_enabled(false);
         assert!(c.queue_files().is_empty());
-        assert_eq!(c.enqueue_and_flush("/ic/v1/x", b"{}", false), Delivery::Off);
+        assert_eq!(c.enqueue_and_flush("/ic/v1/x", b"{}", false, false), Delivery::Off);
         assert_eq!(c.send_now("/ic/v1/x", b"{}", false), Delivery::Off);
         assert_eq!(m.sent.lock().unwrap().len(), 1);
+    }
+
+    fn has_install(m: &Mock, i: usize) -> bool {
+        m.sent.lock().unwrap()[i].1.iter().any(|(k, _)| k == "X-IC-Install")
+    }
+
+    #[test]
+    fn off_still_sends_a_user_report_without_install_id() {
+        let d = tempdir("off-user");
+        let m = Mock::default();
+        let c = client(&d, &m);
+        c.set_enabled(false);
+        assert_eq!(c.enqueue_and_flush("/ic/v1/feedback", b"{}", true, true), Delivery::Sent);
+        assert!(!has_install(&m, 0));
+    }
+
+    #[test]
+    fn off_never_sends_a_ping() {
+        let d = tempdir("off-ping");
+        let m = Mock::default();
+        let c = client(&d, &m);
+        c.set_enabled(false);
+        assert_eq!(c.send_now("/ic/v1/ping", b"{}", true), Delivery::Off);
+        assert_eq!(c.enqueue_and_flush("/ic/v1/crash", b"{}", true, false), Delivery::Off);
+        assert!(m.sent.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn report_queued_while_off_keeps_no_install_id_after_on() {
+        let d = tempdir("off-on");
+        let m = Mock::default();
+        m.replies.lock().unwrap().push(Err("offline".into()));
+        let c = client(&d, &m);
+        c.set_enabled(false);
+        assert_eq!(c.enqueue_and_flush("/ic/v1/feedback", b"{}", true, true), Delivery::Queued);
+        c.set_enabled(true);
+        c.state.lock().unwrap().retry_at = 0;
+        assert_eq!(c.flush(), 1);
+        assert!(!has_install(&m, 1));
     }
 
     #[test]

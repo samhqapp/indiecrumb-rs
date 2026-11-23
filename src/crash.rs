@@ -113,7 +113,7 @@ impl Client {
         let Some(p) = self.spool_path(id) else { return Delivery::Rejected(404) };
         let Ok(body) = fs::read(&p) else { return Delivery::Rejected(404) };
         let _ = fs::remove_file(&p); // the queue owns it now
-        self.enqueue_and_flush(ROUTE, &body, install)
+        self.enqueue_and_flush(ROUTE, &body, install, !install) // Ask mode: the user approved it
     }
 
     fn spool_path(&self, id: &str) -> Option<PathBuf> {

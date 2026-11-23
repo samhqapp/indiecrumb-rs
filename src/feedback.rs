@@ -38,7 +38,7 @@ impl Client {
     /// Checks the item, stores it in the queue and sends the queue. Blocking.
     pub fn send_feedback(&self, f: Feedback) -> Result<Delivery, FeedbackError> {
         let body = self.feedback_body(&f)?;
-        Ok(self.enqueue_and_flush(ROUTE, &body, true))
+        Ok(self.enqueue_and_flush(ROUTE, &body, true, true))
     }
 
     pub(crate) fn feedback_body(&self, f: &Feedback) -> Result<Vec<u8>, FeedbackError> {

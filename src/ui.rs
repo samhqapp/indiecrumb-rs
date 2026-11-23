@@ -8,7 +8,8 @@ use gpui_kit::component::{Sizable as _, Size};
 use gpui_kit::gpui::accesskit::Toggled;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, px, rgba, AnyElement, App, AppContext as _, BoxShadow, ClickEvent, Context, Div, Entity, FontWeight, Hsla,
+    div, px, rgba, AnyElement, App, AppContext as _, BoxShadow, ClickEvent, Context, Div, Entity, FocusHandle,
+    FontWeight, Hsla, KeyDownEvent,
     InteractiveElement, IntoElement, ParentElement, Render, Role, SharedString, StatefulInteractiveElement, Styled,
     Window, WindowAppearance,
 };
@@ -212,6 +213,35 @@ fn switch(t: &Theme, id: &'static str, label: &'static str, on: bool, toggle: To
         .child(track.child(knob))
 }
 
+/// A row with a title and a switch. Tab reaches the row; Space or Return flips the switch. Keyboard
+/// focus shows as a soft accent tint on the row, never an outline ring.
+fn switch_row(
+    t: &Theme,
+    focus: &FocusHandle,
+    id: &'static str,
+    label: &'static str,
+    title: impl IntoElement,
+    on: bool,
+    toggle: Toggle,
+) -> gpui_kit::Stateful<Div> {
+    let p = t.palette();
+    let tint = t.accent.opacity(0.14);
+    let key_toggle = toggle.clone();
+    row(&p)
+        .id(SharedString::from(format!("{id}-row")))
+        .track_focus(focus)
+        .rounded(px(p.group_radius - 1.0))
+        .focus_visible(move |s| s.bg(tint))
+        .on_key_down(move |e: &KeyDownEvent, window, cx| {
+            if matches!(e.keystroke.key.as_str(), "space" | "enter") {
+                key_toggle(!on, window, cx);
+                cx.stop_propagation();
+            }
+        })
+        .child(title)
+        .child(switch(t, id, label, on, toggle))
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     Plain,
@@ -262,6 +292,7 @@ pub struct Report {
 pub struct ReportProblem {
     message: Entity<TextareaState>,
     email: Entity<InputState>,
+    crash_focus: FocusHandle,
     include_crash: bool,
     sent: bool,
     theme: Option<Theme>,
@@ -275,7 +306,8 @@ impl ReportProblem {
         let message = cx.new(|cx| TextareaState::new(window, cx).placeholder("What happened, and what did you expect?"));
         let email = cx.new(|cx| InputState::new(window, cx).placeholder("name@example.com"));
         cx.observe(&message, |_, _, cx| cx.notify()).detach();
-        ReportProblem { message, email, include_crash: sharing, sent: false, theme: None, on_send: None, on_close: None }
+        let crash_focus = cx.focus_handle().tab_stop(true);
+        ReportProblem { message, email, crash_focus, include_crash: sharing, sent: false, theme: None, on_send: None, on_close: None }
     }
 
     /// Called with the report when the user presses Send. The form then shows "Report sent".
@@ -358,9 +390,15 @@ impl ReportProblem {
             .child(Input::new(&self.email).aria_label("Email (optional)").appearance(false).with_size(Size::Small));
         let options = group(p)
             .child(
-                row(p)
-                    .child(div().text_color(p.label).child("Include last crash"))
-                    .child(switch(t, "ic-report-crash", "Include last crash", self.include_crash, crash_toggle)),
+                switch_row(
+                    t,
+                    &self.crash_focus,
+                    "ic-report-crash",
+                    "Include last crash",
+                    div().text_color(p.label).child("Include last crash"),
+                    self.include_crash,
+                    crash_toggle,
+                ),
             )
             .child(hairline(p))
             .child(
@@ -572,17 +610,27 @@ fn note(t: &Theme) -> impl IntoElement {
 }
 
 /// The Settings row: "Share anonymous usage" with the note and a switch. Nothing shows under it.
-/// Wire `toggle` to `Client::set_enabled` and save the choice; the app's default is on.
-pub fn sharing_row(theme: Theme, on: bool, toggle: impl Fn(bool, &mut Window, &mut App) + 'static) -> impl IntoElement {
+/// Wire `toggle` to `Client::set_enabled` and save the choice; the app's default is on. `focus` is a
+/// handle the app keeps, made with `cx.focus_handle().tab_stop(true)`, so Tab reaches the row.
+pub fn sharing_row(
+    theme: Theme,
+    focus: &FocusHandle,
+    on: bool,
+    toggle: impl Fn(bool, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
     let p = theme.palette();
-    row(&p)
+    let title = div().flex().items_start().gap(px(2.0)).text_color(p.label).child("Share anonymous usage").child(note(&theme));
+    switch_row(&theme, focus, "ic-sharing", "Share anonymous usage", title, on, Rc::new(toggle))
         .font_family(p.font)
         .text_size(px(p.text))
-        .child(div().flex().items_start().gap(px(2.0)).text_color(p.label).child("Share anonymous usage").child(note(&theme)))
-        .child(switch(&theme, "ic-sharing", "Share anonymous usage", on, Rc::new(toggle)))
 }
 
 /// [`sharing_row`] inside its own group box, for an app without groups of its own.
-pub fn sharing_group(theme: Theme, on: bool, toggle: impl Fn(bool, &mut Window, &mut App) + 'static) -> impl IntoElement {
-    group(&theme.palette()).child(sharing_row(theme, on, toggle))
+pub fn sharing_group(
+    theme: Theme,
+    focus: &FocusHandle,
+    on: bool,
+    toggle: impl Fn(bool, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    group(&theme.palette()).child(sharing_row(theme, focus, on, toggle))
 }

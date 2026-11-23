@@ -56,7 +56,8 @@ let form = cx.new(|cx| ReportProblem::new(settings.share_reports, window, cx)
     .on_send(|report, _, _| send_in_background(report))  // text, email, include_crash
     .on_close(|window, _| window.remove_window()));
 // In Settings: "Share anonymous usage", with a "1" note whose tooltip lists what this build sends.
-sharing_row(Theme::of(window), settings.share_reports, |on, _, _| ic.set_enabled(on))
+// `focus`: kept by the app, `cx.focus_handle().tab_stop(true)`. Tab reaches the row, Space flips it.
+sharing_row(Theme::of(window), &focus, settings.share_reports, |on, _, _| ic.set_enabled(on))
 ```
 
 `samples/gpui-render` draws every look in Light and Dark to PNG files (macOS).
@@ -74,15 +75,18 @@ Crash files: `<dir>/crashes/`, at most 10, deleted after 7 days.
 Backoff: `429`, `5xx` and network errors wait `Retry-After` or 1 minute doubling to 6 hours. `410`
 (key revoked) stops all sends for 7 days. Any other `4xx` deletes the item.
 
-Off switch: `enabled: false` or `set_enabled(false)` sends nothing and deletes the queue, the crash
-files and the usage counts. Only `state.json` (the install id and the backoff time) stays.
+Off switch: `enabled: false` or `set_enabled(false)` sends nothing automatic (no ping, no Auto-mode
+crash report) and deletes the queue, the crash files and the usage counts. Only `state.json` (the
+install id and the backoff time) stays. What the user sends by hand (feedback, an Ask-mode crash report
+they approved) still goes, without the install id. An item queued while off keeps no install id even
+if sharing turns on before it is sent.
 
 ## Every field sent
 
 Headers on every request: `Content-Type: application/json`, `X-IC-Key: <ingest key>`.
 `X-IC-Install: <32 hex>`: a random id made on the device (not from hardware, user or account), renewed
 every 90 days. It is sent with the ping, feedback and Auto-mode crash reports, never with an Ask-mode
-crash report. The server keeps it in memory only, for per-install limits, and never stores it.
+crash report, and never while the switch is off. The server keeps it in memory only, for per-install limits, and never stores it.
 
 Nothing sends an IP address on purpose (the server sees the connection's address and keeps it in
 memory only), a hostname, a user name, or a file path. Crash text has the home folder and

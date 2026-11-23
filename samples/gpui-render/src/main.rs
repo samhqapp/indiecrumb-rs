@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// The sharing row with its tooltip drawn open under the note, as it shows on hover.
-struct Settings(Theme);
+struct Settings(Theme, gpui_kit::FocusHandle);
 
 impl Render for Settings {
     fn render(&mut self, _: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<Self>) -> impl IntoElement {
@@ -28,7 +28,7 @@ impl Render for Settings {
             .flex()
             .flex_col()
             .gap(px(8.0))
-            .child(sharing_group(self.0, true, |_, _, _| {}))
+            .child(sharing_group(self.0, &self.1, true, |_, _, _| {}))
             .child(div().pl(px(150.0)).child(tip))
     }
 }
@@ -71,10 +71,26 @@ fn main() {
                 let state = if sent { "sent" } else { "form" };
                 cx.capture_screenshot(w.into()).unwrap().save(out.join(format!("gpui-{name}-report-{state}-{mode}.png"))).unwrap();
             }
-            let mut cx = headless(dark);
-            let w = cx.open_window(size(px(480.0), px(250.0)), move |_, cx| cx.new(|_| Settings(theme))).unwrap();
-            cx.run_until_parked();
-            cx.capture_screenshot(w.into()).unwrap().save(out.join(format!("gpui-{name}-sharing-{mode}.png"))).unwrap();
+            for focused in [false, true] {
+                let mut cx = headless(dark);
+                let w = cx
+                    .open_window(size(px(480.0), px(250.0)), move |_, cx| {
+                        cx.new(|cx| Settings(theme, cx.focus_handle().tab_stop(true)))
+                    })
+                    .unwrap();
+                if focused {
+                    // A key press first, so the focus counts as keyboard focus.
+                    let f = w.update(&mut cx, |s, _, _| s.1.clone()).unwrap();
+                    cx.update_window(w.into(), |_, window, cx| {
+                        window.dispatch_keystroke(gpui_kit::Keystroke::parse("escape").unwrap(), cx);
+                        window.focus(&f, cx);
+                    })
+                    .unwrap();
+                }
+                cx.run_until_parked();
+                let tag = if focused { "sharing-focus" } else { "sharing" };
+                cx.capture_screenshot(w.into()).unwrap().save(out.join(format!("gpui-{name}-{tag}-{mode}.png"))).unwrap();
+            }
         }
     }
 }
