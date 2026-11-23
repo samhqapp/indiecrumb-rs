@@ -14,6 +14,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub mod crash;
 #[cfg(feature = "feedback")]
 pub mod feedback;
+#[cfg(feature = "gpui")]
+pub mod ui;
 #[cfg(feature = "usage")]
 pub mod usage;
 

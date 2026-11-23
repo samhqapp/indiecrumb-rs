@@ -12,6 +12,7 @@ MIT licensed. Small on purpose, so you can read all of it before you ship it.
 | `usage` | `Client::record_use`, `add_counter`, `ping_if_due` | none |
 | `crash` | `Client::install_panic_hook`, `pending_crashes`, `send_crash`, `discard_crash`, `send_all_crashes` | `backtrace` |
 | `ureq` | `Ureq`, a ready `Transport` (rustls) | `ureq` |
+| `gpui` | `ui::ReportProblem` (the "Report a problem" form) and `ui::sharing_row` (the Settings switch) | `gpui-kit` |
 
 The default feature set is empty. Code of a feature you do not turn on is not compiled, so it is not
 in your binary. Check: `samples/feedback-only` links only `feedback`; its release binary has no
@@ -42,7 +43,23 @@ ic.send_feedback(Feedback { kind: Kind::Bug, text, email: None, screenshot: Some
 ic.set_enabled(false);                  // the user turned it off: queue, crash files and counts deleted
 ```
 
-Every send blocks. Call it from a background thread.
+Every send blocks. Call it from a background thread. The library sends nothing by itself: every
+request starts from a call your app makes.
+
+## UI (feature `gpui`)
+
+For GPUI apps. Each part looks native: an Apple grouped form on macOS, Fluent on Windows, libadwaita
+on Linux (picked with `cfg(target_os)`, Light or Dark from the window). Call `gpui_kit::init` first.
+
+```rust
+let form = cx.new(|cx| ReportProblem::new(settings.share_reports, window, cx)
+    .on_send(|report, _, _| send_in_background(report))  // text, email, include_crash
+    .on_close(|window, _| window.remove_window()));
+// In Settings: "Share anonymous usage", with a "1" note whose tooltip lists what this build sends.
+sharing_row(Theme::of(window), settings.share_reports, |on, _, _| ic.set_enabled(on))
+```
+
+`samples/gpui-render` draws every look in Light and Dark to PNG files (macOS).
 
 ## When anything is sent
 

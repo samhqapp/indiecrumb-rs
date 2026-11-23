@@ -1,0 +1,80 @@
+//! Draws the `gpui` UI offscreen and saves PNGs: `cargo run -- <out folder>`. Opens no window.
+
+use gpui_kit::component::theme::{Theme as KitTheme, ThemeMode};
+use gpui_kit::{div, px, size, AppContext as _, HeadlessAppContext, IntoElement, ParentElement, Render, Styled};
+use indiecrumb::ui::{sharing_group, Look, ReportProblem, Theme, Tip};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+/// The sharing row with its tooltip drawn open under the note, as it shows on hover.
+struct Settings(Theme);
+
+impl Render for Settings {
+    fn render(&mut self, _: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+        let bg: gpui_kit::Hsla = gpui_kit::rgba(match (self.0.look, self.0.dark) {
+            (Look::Mac, false) => 0xECECECFF,
+            (Look::Mac, true) => 0x282828FF,
+            (Look::Windows, false) => 0xF3F3F3FF,
+            (Look::Windows, true) => 0x202020FF,
+            (Look::Gnome, false) => 0xFAFAFBFF,
+            (Look::Gnome, true) => 0x222226FF,
+        })
+        .into();
+        let tip = cx.new(|_| Tip::new(self.0, indiecrumb::ui::sharing_summary()));
+        div()
+            .size_full()
+            .bg(bg)
+            .p(px(20.0))
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(sharing_group(self.0, true, |_, _, _| {}))
+            .child(div().pl(px(150.0)).child(tip))
+    }
+}
+
+fn headless(dark: bool) -> HeadlessAppContext {
+    let text = gpui_kit::platform::current_platform(true).text_system();
+    let mut cx = HeadlessAppContext::with_platform(text, Arc::new(()), gpui_kit::platform::current_headless_renderer);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        KitTheme::change(if dark { ThemeMode::Dark } else { ThemeMode::Light }, None, cx);
+    });
+    cx
+}
+
+fn main() {
+    let out = PathBuf::from(std::env::args().nth(1).expect("out folder"));
+    std::fs::create_dir_all(&out).unwrap();
+    for (look, name) in [(Look::Mac, "mac"), (Look::Windows, "windows"), (Look::Gnome, "gnome")] {
+        for dark in [false, true] {
+            let theme = Theme::new(look, dark);
+            let mode = if dark { "dark" } else { "light" };
+            for sent in [false, true] {
+                let mut cx = headless(dark);
+                let h = match look {
+                    Look::Mac => 390.0,
+                    Look::Windows => 470.0,
+                    Look::Gnome => 400.0,
+                };
+                let w = cx
+                    .open_window(size(px(480.0), px(h)), move |window, cx| {
+                        let form = cx.new(|cx| {
+                            let mut f = ReportProblem::new(true, window, cx).theme(theme);
+                            f.set_sent(sent, cx);
+                            f
+                        });
+                        cx.new(|cx| gpui_kit::base::Root::new(form, window, cx))
+                    })
+                    .unwrap();
+                cx.run_until_parked();
+                let state = if sent { "sent" } else { "form" };
+                cx.capture_screenshot(w.into()).unwrap().save(out.join(format!("gpui-{name}-report-{state}-{mode}.png"))).unwrap();
+            }
+            let mut cx = headless(dark);
+            let w = cx.open_window(size(px(480.0), px(250.0)), move |_, cx| cx.new(|_| Settings(theme))).unwrap();
+            cx.run_until_parked();
+            cx.capture_screenshot(w.into()).unwrap().save(out.join(format!("gpui-{name}-sharing-{mode}.png"))).unwrap();
+        }
+    }
+}

@@ -1,0 +1,13 @@
+[package]
+name = "gpui-render"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Stand-alone: draws the `gpui` UI offscreen to PNG files. macOS only (Metal and the SF font).
+[workspace]
+
+[dependencies]
+indiecrumb = { path = "../..", features = ["feedback", "usage", "crash", "gpui"] }
+gpui-kit = { version = "0.7", features = ["test-support"] }
+gpui-pre-macos = "0.3"
